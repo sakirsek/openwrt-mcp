@@ -14,19 +14,41 @@
 // Read-only. Pairing and granting stay CLI-only so that nothing reachable over the network
 // can widen a grant.
 (function () {
-  // Element UI's palette, which the surrounding shell already uses. Matched by hand rather
-  // than by using el-* components: whether Element is globally registered for an eval'd view
-  // is unverified, and an unregistered component renders nothing at all.
+  // The shell publishes its palette as CSS custom properties on :root and swaps the whole
+  // stylesheet when the user picks a theme (default / classic / dark on 4.x). Referencing
+  // those variables rather than hardcoding hex keeps this view in step with whichever theme
+  // is active, including ones added after this was written. Each var() carries the Element
+  // UI light value the view used before as its fallback, so a firmware that does not define
+  // them -- stock OpenWrt's LuCI, GL 3.x -- renders exactly as it did.
   var C = {
-    primary: '#409eff',
-    ok: '#67c23a',
-    danger: '#f56c6c',
-    warn: '#e6a23c',
-    text: '#303133',
-    muted: '#909399',
-    border: '#dcdfe6',
-    panel: '#ffffff',
-    bg: '#f5f7fa'
+    primary: 'var(--primary, #409eff)',
+    danger: 'var(--error, #f56c6c)',
+    text: 'var(--text-regular, #303133)',
+    muted: 'var(--text-weak, #909399)',
+    border: 'var(--divider, #dcdfe6)',
+    rule: 'var(--divider, #f5f7fa)',
+    panel: 'var(--background-card, #ffffff)',
+    bg: 'var(--background-title, #f5f7fa)'
+  };
+
+  // Tag colours. The old code tinted the background by appending '1a' to a hex literal,
+  // which cannot work once the colour is a var() reference. Deriving the tint from the
+  // foreground with color-mix() keeps that behaviour and stays correct in any theme.
+  //
+  // The shell's own *-background tokens are deliberately not used here: each is the ground
+  // for its matching foreground, and --info-background pairs with --info, not --primary --
+  // so --primary on it measures about 2.3:1 in the dark theme. A tint of the foreground
+  // itself is both closer to the original design and more legible: on this firmware it
+  // moves the dark theme to 3.1:1 for tool tags and 6.5:1 for a running daemon.
+  //
+  // `tint` is the flat fallback for browsers without color-mix(), and reproduces the exact
+  // 10% wash the view had before.
+  var T = {
+    ok: { fg: 'var(--success, #67c23a)', tint: 'rgba(103, 194, 58, 0.1)' },
+    danger: { fg: 'var(--error, #f56c6c)', tint: 'rgba(245, 108, 108, 0.1)' },
+    warn: { fg: 'var(--warning, #e6a23c)', tint: 'rgba(230, 162, 60, 0.1)' },
+    primary: { fg: 'var(--primary, #409eff)', tint: 'rgba(64, 158, 255, 0.1)' },
+    muted: { fg: 'var(--text-weak, #909399)', tint: 'rgba(144, 147, 153, 0.1)' }
   };
 
   function sessionId() {
@@ -106,12 +128,17 @@
         ].concat(children));
       }
 
-      function tag(text, colour) {
+      function tag(text, pair) {
         return h('span', {
           style: {
             display: 'inline-block', padding: '1px 8px', borderRadius: '3px',
-            fontSize: '12px', lineHeight: '20px', color: colour,
-            border: '1px solid ' + colour, background: colour + '1a',
+            fontSize: '12px', lineHeight: '20px', color: pair.fg,
+            border: '1px solid ' + pair.fg,
+            // Declaration order is the fallback: the shorthand lands the flat tint, then
+            // background-color overrides it where color-mix() parses. A browser that does
+            // not know color-mix() drops the second declaration and keeps the first.
+            background: pair.tint,
+            backgroundColor: 'color-mix(in srgb, ' + pair.fg + ' 16%, transparent)',
             marginRight: '6px', whiteSpace: 'nowrap'
           }
         }, text);
@@ -134,7 +161,7 @@
           return h('tr', cells.map(function (c) {
             return h('td', {
               style: {
-                padding: '8px 10px', borderBottom: '1px solid ' + C.bg,
+                padding: '8px 10px', borderBottom: '1px solid ' + C.rule,
                 fontSize: '13px', color: C.text, verticalAlign: 'top'
               }
             }, [c]);
@@ -185,7 +212,7 @@
       var running = !!st.running;
       var header = panel('MCP Server', [
         h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' } }, [
-          tag(running ? 'Running' : 'Stopped', running ? C.ok : C.danger),
+          tag(running ? 'Running' : 'Stopped', running ? T.ok : T.danger),
           h('span', { style: { color: C.muted, fontSize: '13px' } }, [
             'version ', mono(st.version || '?'), ' · listening on ', mono(st.listen || '?')
           ]),
@@ -194,7 +221,7 @@
             on: { click: self.load },
             style: {
               padding: '7px 16px', cursor: 'pointer', border: '1px solid ' + C.border,
-              background: '#fff', color: C.text, borderRadius: '4px', fontSize: '13px'
+              background: C.panel, color: C.text, borderRadius: '4px', fontSize: '13px'
             }
           }, self.loading ? 'Refreshing…' : 'Refresh')
         ]),
@@ -209,8 +236,8 @@
         return [
           mono(c.name),
           c.policies > 0
-            ? tag(c.policies + (c.policies === 1 ? ' policy' : ' policies'), C.primary)
-            : tag('no grants', C.muted)
+            ? tag(c.policies + (c.policies === 1 ? ' policy' : ' policies'), T.primary)
+            : tag('no grants', T.muted)
         ];
       });
       var clientPanel = panel('Paired clients', [
@@ -220,11 +247,11 @@
 
       // ---- standing policies
       var policies = (st.policies || []).map(function (p) {
-        var state = p.expired ? tag('expired', C.danger)
-          : (!p.enabled ? tag('disabled', C.muted) : tag('active', C.ok));
+        var state = p.expired ? tag('expired', T.danger)
+          : (!p.enabled ? tag('disabled', T.muted) : tag('active', T.ok));
         return [
           mono(p.client),
-          h('div', (p.tools || []).map(function (t) { return tag(t, C.primary); })),
+          h('div', (p.tools || []).map(function (t) { return tag(t, T.primary); })),
           mono((p.scopes || []).join(' ')),
           h('span', { style: { whiteSpace: 'nowrap' } }, p.max_per_min + '/min'),
           h('div', [state, h('div', {
@@ -239,10 +266,10 @@
 
       // ---- audit tail, newest at the bottom as the log has it
       var audit = (st.audit || []).map(function (a) {
-        var colour = a.outcome === 'OK' ? C.ok : (a.outcome === 'DENIED' ? C.warn : C.danger);
+        var pair = a.outcome === 'OK' ? T.ok : (a.outcome === 'DENIED' ? T.warn : T.danger);
         return [
           mono((a.time || '').replace('T', ' ').replace('Z', '')),
-          tag(a.outcome, colour),
+          tag(a.outcome, pair),
           mono(a.client || ''),
           mono(a.tool || ''),
           h('div', [
@@ -260,7 +287,7 @@
           'Full log: /etc/openwrt-mcp/audit.jsonl')
       ]);
 
-      return h('div', { style: { padding: '20px', background: C.bg, minHeight: '100%' } },
+      return h('div', { style: { padding: '20px', minHeight: '100%' } },
         [header, clientPanel, policyPanel, auditPanel]);
     }
   };
